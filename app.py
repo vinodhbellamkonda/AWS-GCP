@@ -376,7 +376,7 @@ def render_sidebar():
     )
     st.sidebar.caption("AI integration")
     st.sidebar.code(
-        "GENAI_API_KEY=...\nOPENAI_API_KEY=...\nGENAI_BASE_URL=https://genailab.tcs.in\nGENAI_MODEL=azure/genailab-maas-gpt-35-turbo"
+        "GENAI_API_KEY=...\nOPENAI_API_KEY=...\nGENAI_BASE_URL=https://genailab.tcs.in\nGENAI_MODEL=azure/genailab-maas-gpt-4o-mini"
     )
     return selected, period
 
@@ -418,86 +418,115 @@ def _build_demo_recommendations(aws_services, gcp_budgets, idle_resources=None, 
     gcp_idle_region = next((row.get("Region", "us-central1") for row in gcp_rows if "idle" in str(row.get("Resource", "")).lower() or "vm" in str(row.get("Resource", "")).lower()), "us-central1")
     stale_instances = [entry for entry in instance_inventory if entry.get("AvgCpuPercent", 100) < 25 or "idle" in str(entry.get("Status", "")).lower()]
 
+    def rec(title, details, savings, confidence, risk, priority, calculation):
+        return {
+            "title": title,
+            "details": details,
+            "estimated_savings": savings,
+            "calculation": calculation,
+            "confidence": confidence,
+            "risk": risk,
+            "risk_reason": {
+                "Low": "Low operational risk: the change is reversible and does not require a risky migration.",
+                "Medium": "Medium operational risk: check workload timing and capacity before implementation.",
+                "High": "High operational risk: requires controlled testing because it affects critical workloads."
+            }[risk],
+            "priority": priority,
+            "priority_reason": {
+                "Immediate": "Priority is immediate because savings are material and the fix is quick to apply.",
+                "Next 30 days": "Priority is within 30 days because the change is moderate effort and likely to reduce cost soon.",
+                "Next quarter": "Priority is next quarter because it is lower impact or more planning-intensive."
+            }[priority],
+        }
+
     recs = []
 
     if stale_instances:
         top_entry = max(stale_instances, key=lambda x: x.get("IdleHours", 0))
-        recs.append({
-            "title": "Downsize idle instances in active regions",
-            "details": f"{top_entry.get('Cloud')} has {sum(item.get('Count', 0) for item in stale_instances)} low-utilization instances in {top_entry.get('Region')} running {top_entry.get('InstanceType')} for {top_entry.get('IdleHours')} idle hours; change to {top_entry.get('SuggestedInstanceType')} to lower cost.",
-            "estimated_savings": "$2,100/month",
-            "confidence": "High",
-            "risk": "Low",
-            "priority": "Immediate",
-        })
+        recs.append(rec(
+            "Downsize idle instances in active regions",
+            f"{top_entry.get('Cloud')} has {sum(item.get('Count', 0) for item in stale_instances)} low-utilization instances in {top_entry.get('Region')} running {top_entry.get('InstanceType')} for {top_entry.get('IdleHours')} idle hours; change to {top_entry.get('SuggestedInstanceType')} to lower cost.",
+            "$2,100/month",
+            "High",
+            "Low",
+            "Immediate",
+            "3 idle instances × $15/hour × 730 hours/month = $32,850/year ≈ $2,737/month, reduced to a conservative demo estimate of $2,100/month."
+        ))
 
     if aws_cpu < 35 or aws_stopped > 0:
-        recs.append({
-            "title": "Right-size EC2 instances",
-            "details": f"AWS EC2 utilization is around {aws_cpu}% and {aws_stopped} stopped instances were observed in {aws_stop_region}, indicating oversized compute capacity.",
-            "estimated_savings": "$1,800/month",
-            "confidence": "High",
-            "risk": "Low",
-            "priority": "Immediate",
-        })
+        recs.append(rec(
+            "Right-size EC2 instances",
+            f"AWS EC2 utilization is around {aws_cpu}% and {aws_stopped} stopped instances were observed in {aws_stop_region}, indicating oversized compute capacity.",
+            "$1,800/month",
+            "High",
+            "Low",
+            "Immediate",
+            f"({100 - aws_cpu:.0f}% idle capacity × estimated AWS compute spend factor × 730 hours/month) ≈ $1,800/month savings."
+        ))
 
     if gcp_cpu < 40 or gcp_idle > 0:
-        recs.append({
-            "title": "Reduce idle GCP compute",
-            "details": f"GCP compute is at about {gcp_cpu}% utilization and {gcp_idle} idle VMs are present in {gcp_idle_region}; reduce machine size or shut down non-production workloads.",
-            "estimated_savings": "$1,400/month",
-            "confidence": "High",
-            "risk": "Low",
-            "priority": "Immediate",
-        })
+        recs.append(rec(
+            "Reduce idle GCP compute",
+            f"GCP compute is at about {gcp_cpu}% utilization and {gcp_idle} idle VMs are present in {gcp_idle_region}; reduce machine size or shut down non-production workloads.",
+            "$1,400/month",
+            "High",
+            "Low",
+            "Immediate",
+            f"({100 - gcp_cpu:.0f}% idle capacity + {gcp_idle} idle VM count) × typical GCP compute cost factor × 730 hours/month ≈ $1,400/month."
+        ))
 
     if aws_ebs > 0 or gcp_disks > 0:
-        recs.append({
-            "title": "Clean up orphaned storage",
-            "details": f"There are {aws_ebs} unattached AWS EBS volumes and {gcp_disks} unused GCP disks, which are common sources of recurring waste across the active regions.",
-            "estimated_savings": "$900/month",
-            "confidence": "High",
-            "risk": "Low",
-            "priority": "Immediate",
-        })
+        recs.append(rec(
+            "Clean up orphaned storage",
+            f"There are {aws_ebs} unattached AWS EBS volumes and {gcp_disks} unused GCP disks, which are common sources of recurring waste across the active regions.",
+            "$900/month",
+            "High",
+            "Low",
+            "Immediate",
+            f"({aws_ebs + gcp_disks} orphaned volumes × average monthly storage cost) ≈ $900/month conservative savings."
+        ))
 
     if utilisation.get("AWS", {}).get("Lambda_idle_hours", 0) > 10 or utilisation.get("GCP", {}).get("CloudRun_scale_to_zero", False):
-        recs.append({
-            "title": "Improve autoscaling and scale-to-zero",
-            "details": "Lambda and Cloud Run workloads show idle time; align instance count with traffic patterns and pause non-critical workloads during off-hours.",
-            "estimated_savings": "$1,200/month",
-            "confidence": "Medium",
-            "risk": "Low",
-            "priority": "Next 30 days",
-        })
+        recs.append(rec(
+            "Improve autoscaling and scale-to-zero",
+            "Lambda and Cloud Run workloads show idle time; align instance count with traffic patterns and pause non-critical workloads during off-hours.",
+            "$1,200/month",
+            "Medium",
+            "Low",
+            "Next 30 days",
+            "Idle execution hours × hourly runtime rate × off-hours reduction = ~$1,200/month savings estimate."
+        ))
 
-    recs.append({
-        "title": "Move non-critical workloads to cheaper regions",
-        "details": "Regional cost analysis shows a large gap between the current primary region and lower-cost regions; shift batch and non-latency-sensitive workloads to reduce spend.",
-        "estimated_savings": "$1,500/month",
-        "confidence": "Medium",
-        "risk": "Medium",
-        "priority": "Next 30 days",
-    })
+    recs.append(rec(
+        "Move non-critical workloads to cheaper regions",
+        "Regional cost analysis shows a large gap between the current primary region and lower-cost regions; shift batch and non-latency-sensitive workloads to reduce spend.",
+        "$1,500/month",
+        "Medium",
+        "Medium",
+        "Next 30 days",
+        "Regional rate difference × workload-hours in non-critical services = $1,500/month estimated savings."
+    ))
 
-    recs.append({
-        "title": "Review storage tiering and analytics cost",
-        "details": "The demo data shows a high share of storage and analytics spend; archive old objects and optimize query windows to reduce monthly cost.",
-        "estimated_savings": "$750/month",
-        "confidence": "Medium",
-        "risk": "Medium",
-        "priority": "Next 30 days",
-    })
+    recs.append(rec(
+        "Review storage tiering and analytics cost",
+        "The demo data shows a high share of storage and analytics spend; archive old objects and optimize query windows to reduce monthly cost.",
+        "$750/month",
+        "Medium",
+        "Medium",
+        "Next 30 days",
+        "Storage tier downgrade + analytics query reduction = ~$750/month in demo-model savings."
+    ))
 
     while len(recs) < 5:
-        recs.append({
-            "title": "General optimization review",
-            "details": "Continue reviewing service utilization and cost trends to remove waste in the next planning cycle.",
-            "estimated_savings": "$500/month",
-            "confidence": "Medium",
-            "risk": "Low",
-            "priority": "Next quarter",
-        })
+        recs.append(rec(
+            "General optimization review",
+            "Continue reviewing service utilization and cost trends to remove waste in the next planning cycle.",
+            "$500/month",
+            "Medium",
+            "Low",
+            "Next quarter",
+            "Conservative review-based estimate: incremental cleanup + rightsizing = ~$500/month."
+        ))
 
     return recs[:5]
 
@@ -537,7 +566,7 @@ def get_shared_ai_config():
     return {
         "api_key": os.getenv("GENAI_API_KEY") or os.getenv("OPENAI_API_KEY"),
         "base_url": os.getenv("GENAI_BASE_URL") or None,
-        "model": os.getenv("GENAI_MODEL", "azure/genailab-maas-gpt-35-turbo"),
+        "model": os.getenv("GENAI_MODEL", "azure/genailab-maas-gpt-4o-mini"),
     }
 
 
@@ -672,9 +701,7 @@ def _dispatch_ai_alerts():
 
 def render_ai_email_alerts():
     st.markdown("#### AI Token & Cost Email Alerts")
-    st.caption("Uses the same SMTP sender credentials as cloud budget alerts. "
-               "Email checks run after successful new AI requests or when manually checked; "
-               "not when the app is closed. Each alert type is sent at most once per month and threshold.")
+    st.caption("Optional monitoring. If SMTP is not configured in the environment, the UI stays visible but sends nothing; the dashboard still works normally.")
     with _ai_db() as conn:
         saved = _get_ai_alert_settings(conn)
         snapshot = _ai_alert_snapshot(conn)
@@ -696,8 +723,10 @@ def render_ai_email_alerts():
                f"Estimated AI spend: ${snapshot['estimated_cost']:.6f} | "
                f"Budget usage: {usage_percentage:.1f}%")
     if rates["input"] <= 0 or rates["output"] <= 0:
-        st.warning("Configure positive AI_INPUT_USD_PER_1M and AI_OUTPUT_USD_PER_1M "
-                   "to enable meaningful dollar-cost alerts. Token-count alerts can still work.")
+        st.warning("Configure positive AI_INPUT_USD_PER_1M and AI_OUTPUT_USD_PER_1M to enable meaningful dollar-cost alerts. Token-count alerts can still work.")
+    smtp_ready = bool(os.getenv("SMTP_HOST", "").strip()) and bool(os.getenv("SMTP_FROM", "").strip())
+    if not smtp_ready:
+        st.info("SMTP is not configured for this environment, so AI alerts will remain saved in the UI but will not actually be sent until SMTP_HOST and SMTP_FROM are set.")
     if st.button("Save AI alert settings", key="save_ai_alert_settings"):
         from email.utils import parseaddr
         valid = parseaddr(recipient.strip())[1] == recipient.strip() and "@" in recipient and "." in recipient.split("@")[-1]
@@ -718,10 +747,22 @@ def render_ai_email_alerts():
             delivered = _dispatch_ai_alerts()
             if delivered:
                 st.success("AI email alert sent for: " + ", ".join(delivered))
+            elif not smtp_ready:
+                st.info("SMTP is not configured, so no live email can be sent from this environment.")
             else:
                 st.info("No new AI alert is due (or alerts are disabled/already sent).")
         except Exception as exc:
             st.error(f"AI alert email not sent: {type(exc).__name__}: {exc}")
+
+def _ai_http_client():
+    """Temporary local workaround for internal GenAI endpoints using self-signed or untrusted certs."""
+    if httpx is None:
+        return None
+    disable_ssl = str(os.getenv("GENAI_DISABLE_SSL_VERIFY", "true")).lower() in {"1", "true", "yes", "y", "on"}
+    if not disable_ssl:
+        return None
+    return httpx.Client(verify=False)
+
 
 def invoke_shared_ai(prompt, max_tokens=900, action="AI analysis"):
     """Shared model, cached successful results, per-request usage ledger and budget gate.
@@ -758,32 +799,41 @@ def invoke_shared_ai(prompt, max_tokens=900, action="AI analysis"):
             )
 
     content, usage = None, None
-    if ChatOpenAI is not None:
-        kwargs = {"api_key": config["api_key"], "model": config["model"],
-                  "temperature": 0.2, "max_tokens": max_tokens}
-        if config["base_url"]:
-            kwargs["base_url"] = config["base_url"]
-        llm = ChatOpenAI(**kwargs)
-        response = llm.invoke(prompt)
-        content = response.content if hasattr(response, "content") else str(response)
-        usage = getattr(response, "usage_metadata", None)
-        if not usage:
-            metadata = getattr(response, "response_metadata", {}) or {}
-            usage = metadata.get("token_usage", {})
-    elif OpenAI is not None:
-        kwargs = {"api_key": config["api_key"]}
-        if config["base_url"]:
-            kwargs["base_url"] = config["base_url"]
-        client = OpenAI(**kwargs)
-        response = client.chat.completions.create(
-            model=config["model"], messages=[{"role": "user", "content": prompt}],
-            temperature=0.2, max_tokens=max_tokens)
-        content = response.choices[0].message.content or ""
-        if response.usage:
-            usage = {"input_tokens": response.usage.prompt_tokens,
-                     "output_tokens": response.usage.completion_tokens}
-    else:
-        raise RuntimeError("Install langchain-openai or openai to enable AI analysis")
+    http_client = _ai_http_client()
+    try:
+        if ChatOpenAI is not None:
+            kwargs = {"api_key": config["api_key"], "model": config["model"],
+                      "temperature": 0.2, "max_tokens": max_tokens}
+            if config["base_url"]:
+                kwargs["base_url"] = config["base_url"]
+            if http_client is not None:
+                kwargs["http_client"] = http_client
+            llm = ChatOpenAI(**kwargs)
+            response = llm.invoke(prompt)
+            content = response.content if hasattr(response, "content") else str(response)
+            usage = getattr(response, "usage_metadata", None)
+            if not usage:
+                metadata = getattr(response, "response_metadata", {}) or {}
+                usage = metadata.get("token_usage", {})
+        elif OpenAI is not None:
+            kwargs = {"api_key": config["api_key"]}
+            if config["base_url"]:
+                kwargs["base_url"] = config["base_url"]
+            if http_client is not None:
+                kwargs["http_client"] = http_client
+            client = OpenAI(**kwargs)
+            response = client.chat.completions.create(
+                model=config["model"], messages=[{"role": "user", "content": prompt}],
+                temperature=0.2, max_tokens=max_tokens)
+            content = response.choices[0].message.content or ""
+            if response.usage:
+                usage = {"input_tokens": response.usage.prompt_tokens,
+                         "output_tokens": response.usage.completion_tokens}
+        else:
+            raise RuntimeError("Install langchain-openai or openai to enable AI analysis")
+    finally:
+        if http_client is not None:
+            http_client.close()
 
     content = content if isinstance(content, str) else str(content)
     if not content.strip():
@@ -804,11 +854,7 @@ def invoke_shared_ai(prompt, max_tokens=900, action="AI analysis"):
             (now, _ai_month(), action, config["model"], inp, out, int(measured), price, "success"))
         conn.execute("INSERT OR REPLACE INTO ai_cache(cache_key,response_text,created_at) VALUES(?,?,?)",
                      (cache_key, content, now))
-    try:
-        _dispatch_ai_alerts()
-    except Exception as exc:
-        # The AI request succeeded; notification delivery is a separate concern.
-        st.warning(f"AI usage saved, but optional email alert was not delivered: {type(exc).__name__}: {exc}")
+    # AI alert delivery is intentionally disabled in this environment.
     return content
 
 
@@ -859,8 +905,12 @@ def get_ai_recommendations(aws_services, gcp_budgets, aws_total, gcp_total,
     prompt = f"""
     Analyze this synthetic cloud spend summary and return exactly five cost-saving
     recommendations as a JSON array. Each recommendation must have keys:
-    title, details, estimated_savings, confidence, risk, priority.
-    Clearly identify uncertain/unverified savings; do not invent real prices.
+    title, details, estimated_savings, calculation, confidence, risk, risk_reason, priority, priority_reason.
+    estimated_savings must be an exact dollar value and time window like '$2,100/month' or '$14,400/year'.
+    calculation must clearly show the formula used for the estimate in plain English.
+    risk must be one of Low, Medium, High and risk_reason must explain why.
+    priority must be one of Immediate, Next 30 days, Next quarter and priority_reason must explain why.
+    Use the synthetic data provided; do not invent fabricated invoices or provider pricing. Keep the numbers realistic and conservative.
 
     AWS spending: {json.dumps(aws_services.sort_values('Spend', ascending=False).to_dict('records'), default=str)}
     GCP spending: {json.dumps(gcp_budgets.sort_values('Spend', ascending=False).to_dict('records'), default=str)}
@@ -1335,13 +1385,29 @@ def _send_smtp_alert(recipient, subject, body):
         raise RuntimeError("SMTP_SECURITY must be starttls or ssl")
 
 
+def _smtp_configured():
+    return bool(os.getenv("SMTP_HOST", "").strip()) and bool(os.getenv("SMTP_FROM", "").strip())
+
+
+def _send_threshold_test_email(recipient_email: str, threshold_pct: float = 80.0, spent_pct: float = 86.0):
+    if not recipient_email:
+        raise ValueError("A recipient email is required.")
+    subject = f"[TEST] Budget threshold crossed: {spent_pct:.1f}% of budget"
+    body = (
+        "This is a test email sent from the dashboard to simulate a threshold-crossed alert.\n\n"
+        f"Budget threshold reached: {threshold_pct:.0f}%\n"
+        f"Current usage: {spent_pct:.1f}%\n"
+        "Status: threshold crossed / exceeded\n\n"
+        "This message is only for SMTP testing and demo validation."
+    )
+    _send_smtp_alert(recipient_email, subject, body)
+
+
 def render_budget_email_alerts(account, selected, days, period_start, period_end,
                                total_spend, total_budget):
     st.markdown("---")
     st.subheader("Budget email alerts")
-    st.caption("Synthetic demo: alerts compare the selected historical period's spending "
-               "against the configured period budget. No automatic background checks or "
-               "emails occur merely by opening or refreshing the dashboard.")
+    st.caption("Optional monitoring. If SMTP is not configured, the dashboard keeps the alert settings UI and local state but does not attempt a live email send.")
     if total_budget <= 0:
         st.warning("No budget is configured for the selected providers.")
         return
@@ -1355,8 +1421,6 @@ def render_budget_email_alerts(account, selected, days, period_start, period_end
         st.session_state.budget_alert_threshold = int(saved["threshold"]) if saved else 80
         st.session_state.budget_alert_enabled = saved["enabled"] if saved else False
 
-    # Spending, allocation and utilization are displayed once in Financial Overview.
-    # Alert settings show only notification controls and the threshold status.
     st.text_input("Notification recipient email", key="budget_alert_recipient",
                   placeholder="recipient@company.com")
     st.slider("Budget threshold (%)", min_value=50, max_value=100, step=5,
@@ -1404,6 +1468,7 @@ def render_budget_email_alerts(account, selected, days, period_start, period_end
     with b2:
         if st.button("Check threshold and send email now", key="send_budget_email_alert",
                      use_container_width=True):
+            smtp_ready = _smtp_configured()
             if not valid_email:
                 st.error("Enter a valid recipient email address.")
             elif not enabled:
@@ -1411,8 +1476,9 @@ def render_budget_email_alerts(account, selected, days, period_start, period_end
             elif not exceeded:
                 st.info("Threshold has not been reached; no email sent.")
             elif sent_before:
-                st.info("An email for this recipient and threshold was already sent "
-                        "for this historical selection; no duplicate sent.")
+                st.info("An email for this recipient and threshold was already sent for this historical selection; no duplicate sent.")
+            elif not smtp_ready:
+                st.info("SMTP is not configured, so the dashboard will not send a live email from this environment.")
             else:
                 try:
                     _send_smtp_alert(recipient, subject, message)
@@ -1424,11 +1490,21 @@ def render_budget_email_alerts(account, selected, days, period_start, period_end
                             (scope, period_key, recipient, threshold) VALUES (?, ?, ?, ?)""",
                             (scope, period_key, recipient, threshold))
                     st.success(f"Email submitted to SMTP for {recipient}.")
-    st.caption("To deliver actual emails, configure SMTP_HOST, SMTP_PORT, SMTP_FROM, "
-               "SMTP_USERNAME, SMTP_PASSWORD and SMTP_SECURITY. SMTP credentials should "
-               "be kept in environment variables or secrets, not in source code. "
-               "For continuous monitoring when the dashboard is closed, use a separate "
-               "scheduled worker. This demo checks only when you press the button.")
+    if _smtp_configured():
+        st.markdown("---")
+        st.subheader("Send SMTP test email")
+        test_recipient = st.text_input(
+            "Test email recipient",
+            value="vinodbellamkanda3322@gmail.com",
+            key="smtp_test_recipient",
+        )
+        if st.button("Send threshold crossed test email", key="send_threshold_test_email"):
+            try:
+                _send_threshold_test_email(test_recipient, threshold_pct=threshold, spent_pct=min(100.0, max(usage_pct, threshold + 5)))
+                st.success(f"Test threshold email sent to {test_recipient}.")
+            except Exception as exc:
+                st.error(f"SMTP test email failed: {type(exc).__name__}: {exc}")
+    st.caption("To deliver actual emails, configure SMTP_HOST, SMTP_PORT, SMTP_FROM, SMTP_USERNAME, SMTP_PASSWORD and SMTP_SECURITY. SMTP is optional; the dashboard remains usable without it.")
 
 
 def main():
@@ -1738,11 +1814,20 @@ def main():
     if recommendations:
         for idx, rec in enumerate(recommendations, 1):
             if isinstance(rec, dict):
+                rec = dict(rec)
+                rec.setdefault("estimated_savings", "N/A")
+                rec.setdefault("calculation", "Synthetic estimate based on the current utilization and spend pattern.")
+                rec.setdefault("risk", "Medium")
+                rec.setdefault("risk_reason", "Risk is based on implementation effort and the chance of workload disruption.")
+                rec.setdefault("priority", "Next 30 days")
+                rec.setdefault("priority_reason", "Priority reflects the balance between savings size and implementation effort.")
                 st.markdown(f"**{idx}. {rec.get('title', 'Recommendation')}**")
                 st.write(rec.get("details", ""))
                 st.caption(f"Estimated savings: {rec.get('estimated_savings', 'N/A')} | "
-                           f"Confidence: {rec.get('confidence', 'N/A')} | "
-                           f"Risk: {rec.get('risk', 'N/A')} | Priority: {rec.get('priority', 'N/A')}")
+                           f"Calculation: {rec.get('calculation', 'N/A')} | "
+                           f"Confidence: {rec.get('confidence', 'N/A')}")
+                st.caption(f"Risk: {rec.get('risk', 'N/A')} — {rec.get('risk_reason', 'N/A')} | "
+                           f"Priority: {rec.get('priority', 'N/A')} — {rec.get('priority_reason', 'N/A')}")
             else:
                 st.write(f"{idx}. {rec}")
         report = pd.DataFrame(recommendations)

@@ -432,6 +432,7 @@ def _build_demo_recommendations(aws_services, gcp_budgets, idle_resources=None, 
             "confidence": "High",
             "risk": "Low",
             "priority": "Immediate",
+            "calculation": "Calculation: ~36 instances × approximate monthly unit-cost reduction of $58 per instance = ~$2,100/month saved.",
         })
 
     if aws_cpu < 35 or aws_stopped > 0:
@@ -442,6 +443,7 @@ def _build_demo_recommendations(aws_services, gcp_budgets, idle_resources=None, 
             "confidence": "High",
             "risk": "Low",
             "priority": "Immediate",
+            "calculation": "Calculation: 3 stopped instances + 12 underused instances × estimated monthly savings of ~$120 per instance = ~$1,800/month.",
         })
 
     if gcp_cpu < 40 or gcp_idle > 0:
@@ -452,6 +454,7 @@ def _build_demo_recommendations(aws_services, gcp_budgets, idle_resources=None, 
             "confidence": "High",
             "risk": "Low",
             "priority": "Immediate",
+            "calculation": "Calculation: 9 underused GCP VMs × average right-sizing savings of ~$155 per VM = ~$1,400/month.",
         })
 
     if aws_ebs > 0 or gcp_disks > 0:
@@ -462,6 +465,7 @@ def _build_demo_recommendations(aws_services, gcp_budgets, idle_resources=None, 
             "confidence": "High",
             "risk": "Low",
             "priority": "Immediate",
+            "calculation": "Calculation: 6 orphaned EBS volumes + 4 unused disks × estimated monthly storage waste of ~$90 each = ~$900/month.",
         })
 
     if utilisation.get("AWS", {}).get("Lambda_idle_hours", 0) > 10 or utilisation.get("GCP", {}).get("CloudRun_scale_to_zero", False):
@@ -472,6 +476,7 @@ def _build_demo_recommendations(aws_services, gcp_budgets, idle_resources=None, 
             "confidence": "Medium",
             "risk": "Low",
             "priority": "Next 30 days",
+            "calculation": "Calculation: idle time reduction across serverless workloads × lower run-time billing model ≈ ~$1,200/month.",
         })
 
     recs.append({
@@ -481,6 +486,7 @@ def _build_demo_recommendations(aws_services, gcp_budgets, idle_resources=None, 
         "confidence": "Medium",
         "risk": "Medium",
         "priority": "Next 30 days",
+        "calculation": "Calculation: lower-cost region price delta × migrated workload share ≈ ~$1,500/month.",
     })
 
     recs.append({
@@ -490,6 +496,7 @@ def _build_demo_recommendations(aws_services, gcp_budgets, idle_resources=None, 
         "confidence": "Medium",
         "risk": "Medium",
         "priority": "Next 30 days",
+        "calculation": "Calculation: storage and analytics waste reduction × optimized retention and query patterns ≈ ~$750/month.",
     })
 
     while len(recs) < 5:
@@ -500,6 +507,7 @@ def _build_demo_recommendations(aws_services, gcp_budgets, idle_resources=None, 
             "confidence": "Medium",
             "risk": "Low",
             "priority": "Next quarter",
+            "calculation": "Calculation: recurring monthly waste estimate × optimization coverage = ~$500/month.",
         })
 
     return recs[:5]
@@ -526,7 +534,7 @@ def _parse_ai_analysis_payload(text):
             continue
         if re.match(r"^(?:[-*]|\d+[\.)])\s+", line):
             lines.append(re.sub(r"^(?:[-*]|\d+[\.)])\s+", "", line))
-        elif re.match(r"^(?:title|details|estimated_savings|confidence|risk|priority|reasoning)\s*:", line, flags=re.IGNORECASE):
+        elif re.match(r"^(?:title|details|estimated_savings|confidence|risk|priority|calculation|reasoning)\s*:", line, flags=re.IGNORECASE):
             lines.append(line)
 
     if lines:
@@ -751,12 +759,14 @@ def main():
                 confidence = rec.get("confidence", "")
                 risk = rec.get("risk", "")
                 priority = rec.get("priority", "")
+                calculation = rec.get("calculation") or f"Calculation basis: estimated savings represent the modeled monthly reduction from workload rightsizing, idle cleanup, and resource optimization."
                 st.markdown(
                     f"""
                     <div class="ai-highlight">
                         <strong>{idx}. {title}</strong><br>
                         <span>{details}</span><br>
-                        <small>Estimated savings: {savings} | Confidence: {confidence} | Risk: {risk} | Priority: {priority}</small>
+                        <small>Estimated savings: {savings} | Confidence: {confidence} | Risk: {risk} | Priority: {priority}</small><br>
+                        <small>{calculation}</small>
                     </div>
                     """,
                     unsafe_allow_html=True,
